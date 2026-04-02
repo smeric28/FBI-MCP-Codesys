@@ -69,29 +69,25 @@ export async function executeCodesysScript(
         process.stderr.write(`INTEROP: Temp script written: ${tempFilePath}\n`);
 
 
-        // --- Construct command string for shell: true ---
-        // Quote the executable path itself
-        const quotedExePath = `"${codesysExePath}"`;
-        // Format arguments exactly as CODESYS seems to want: --option="Value With Spaces"
-        // The outer quotes are for the shell parser.
-        const profileArg = `--profile="${codesysProfileName}"`;
-        const scriptArg = `--runscript="${tempFilePath}"`; // tempFilePath from path.join has correct backslashes for Win
+        // --- Construct command using execFile-style spawn ---
+        // CODESYS requires --profile="Name With Spaces" with literal quotes.
+        // On Windows, child_process.spawn uses CreateProcess which builds a
+        // command line string. We use windowsVerbatimArguments to prevent
+        // Node from escaping quotes, giving us full control of the cmd line.
+        const spawnArgs = [
+            `--profile="${codesysProfileName}"`,
+            '--noUI',
+            `--runscript="${tempFilePath}"`
+        ];
 
-        // Combine into a single string for the shell
-        const fullCommandString = `${quotedExePath} ${profileArg} --noUI ${scriptArg}`;
-        // Example result: "\"C:\\Program Files\\...\\CODESYS.exe\" --profile=\"CODESYS V3.5 SP21\" --noUI --runscript=\"C:\\Users\\...\\script.py\""
-        // --- End command string construction ---
+        process.stderr.write(`INTEROP: Exe: ${codesysExePath}\n`);
+        process.stderr.write(`INTEROP: Args: ${spawnArgs.join(' ')}\n`);
+        process.stderr.write(`INTEROP ENV: CWD: ${codesysDir}\n`);
 
-        process.stderr.write(`INTEROP: Spawning command (shell:true): ${fullCommandString}\n`);
-        process.stderr.write(`INTEROP ENV: CWD before spawn: ${process.cwd()}\n`);
-        process.stderr.write(`INTEROP ENV: Forcing CWD for spawn: ${codesysDir}\n`); // Re-enabled CWD change
-
-        // --- Create modified environment (Re-enabled) ---
+        // --- Create modified environment ---
         const spawnEnv = { ...process.env };
-        const pathSeparator = ';'; // Windows
         const originalPath = spawnEnv.PATH || '';
-        spawnEnv.PATH = `${codesysDir}${pathSeparator}${originalPath}`; // Prepend CODESYS dir to PATH
-        process.stderr.write(`INTEROP ENV: MODIFIED PATH for spawn (prepended): ${spawnEnv.PATH.substring(0, 100)}...\n`); // Re-enabled ENV change
+        spawnEnv.PATH = `${codesysDir};${originalPath}`;
         // --- End modified environment ---
 
 
@@ -101,16 +97,17 @@ export async function executeCodesysScript(
 
             const controller = new AbortController();
             const timeoutSignal = controller.signal;
-            const timeoutDuration = 60000; // 60 seconds
+            const timeoutDuration = 120000; // 120 seconds — CODESYS startup is slow
 
-            // Pass the single command string, empty args array, and shell: true
-            const childProcess = spawn(fullCommandString, [], { // Pass full string, EMPTY args array
+            // windowsVerbatimArguments prevents Node from escaping quotes.
+            // This lets CODESYS see --profile="CODESYS V3.5 SP22" literally.
+            const childProcess = spawn(codesysExePath, spawnArgs, {
                  windowsHide: true,
                  signal: timeoutSignal,
-                 cwd: codesysDir, // Re-enabled CWD change
-                 env: spawnEnv,   // Re-enabled ENV change
-                 shell: true      // USE shell: true
-                });
+                 cwd: codesysDir,
+                 env: spawnEnv,
+                 windowsVerbatimArguments: true
+                } as any);
 
             const timeoutId = setTimeout(() => {
                 process.stderr.write('INTEROP: Process timeout reached.\n');
